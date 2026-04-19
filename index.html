@@ -188,43 +188,41 @@ html,body{height:100%;overflow-x:hidden;background:var(--bg);color:var(--tx);fon
 <div class="toast" id="toast"></div>
 
 <script>
-// Apps Script endpoint (не хранится в открытом виде)
-var _u1='aHR0cHM6Ly9zY3JpcHQuZ29vZ',_u2='2xlLmNvbS9tYWNyb3Mvcy9BS2',_u3='Z5Y2J6X01LR210RTBaQ2hzMFF',_u4='0anAwaFRxc0ZoaW1hSjFVaXFqdDlLSG5PZ0xta3BvbWRPVVFNUXhiUThIelVSQWZYakNMdy9leGVj';
-function _gu(){return atob(_u1+_u2+_u3+_u4);}
-var APPS_SCRIPT_URL = _gu();
-// Секрет собирается в рантайме из частей
-var _s1='ZGlhc19zZW',_s2='N1cmVfODM5',_s3='MjFfa3pfMjAyNg==';
-function _gs(){return atob(_s1+_s2+_s3);}
-// Пароль не хранится в открытом виде — используется SHA-256 хэш
+var BACKEND_URL = 'https://admin-panel-npfu.onrender.com/'; // ← укажи свой URL на Render
 
 var allLeads = [];
 var curTab = 'pending';
 var authed = false;
 
-// SHA-256 через SubtleCrypto
-async function hashPwd(str){
-  var buf=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(str));
-  return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('');
-}
-var _ph='0c7b8f697bcaea3cb4ce961b012d7d947ff04da6de5dc5503ee747df17331156';
 async function doLogin() {
-  var pwd = document.getElementById('pwd-input').value;
-  var h = await hashPwd(pwd);
-  if (h === _ph) {
-    authed = true;
-    document.getElementById('login-screen').style.display = 'none';
-    document.getElementById('app').style.display = 'flex';
-    loadLeads();
-  } else {
-    document.getElementById('login-err').textContent = 'Неверный пароль';
-    document.getElementById('pwd-input').value = '';
-    document.getElementById('pwd-input').focus();
-    setTimeout(function() { document.getElementById('login-err').textContent = ''; }, 2500);
+  const pwd = document.getElementById('pwd-input').value;
+
+  try {
+    const res = await fetch(BACKEND_URL + '/admin/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: pwd })
+    });
+
+    const data = await res.json();
+
+    if (data.ok && data.token) {
+      localStorage.setItem('admin_token', data.token);
+      authed = true;
+      document.getElementById('login-screen').style.display = 'none';
+      document.getElementById('app').style.display = 'flex';
+      loadLeads();
+    } else {
+      document.getElementById('login-err').textContent = 'Неверный пароль';
+    }
+  } catch (e) {
+    document.getElementById('login-err').textContent = 'Ошибка подключения';
   }
 }
 
 function logout() {
   authed = false;
+  localStorage.removeItem('admin_token');
   document.getElementById('app').style.display = 'none';
   document.getElementById('login-screen').style.display = 'flex';
   document.getElementById('pwd-input').value = '';
@@ -233,124 +231,97 @@ function logout() {
 
 async function loadLeads(showToastFlag) {
   var wrap = document.getElementById('leads-wrap');
-  if (wrap) wrap.innerHTML = '<div class="loader"><div class="spinner"></div><div class="loader-txt">Загружаем заявки...</div></div>';
-  
+  if (wrap) {
+    wrap.innerHTML = '<div class="loader"><div class="spinner"></div><div class="loader-txt">Загружаем заявки...</div></div>';
+  }
+
   try {
-    var url = APPS_SCRIPT_URL + '?action=list&secret=' + encodeURIComponent(_gs()) + '&t=' + Date.now();
-    var res = await fetch(url);
-    var data = await res.json();
+    const res = await fetch(BACKEND_URL + '/admin/leads', {
+      method: 'GET',
+      headers: {
+        'x-admin-token': localStorage.getItem('admin_token') || ''
+      }
+    });
+
+    const data = await res.json();
 
     if (!data.ok) {
-      showErr('Ошибка: ' + (data.error || 'unknown'));
+      if (res.status === 403) {
+        logout();
+        showErr('Сессия истекла');
+        return;
+      }
+      showErr('Ошибка загрузки');
       return;
     }
+
     allLeads = data.leads || [];
     renderLeads();
     updateCounts();
+
     if (showToastFlag) showToast_('Обновлено', 'info');
-  } catch(e) {
+  } catch (e) {
     showErr('Нет соединения');
   }
 }
 
-// Функция удаления с подробным логированием
-async function deleteLead(row, phone, cardId) {
-  if (!confirm('🗑 Удалить заявку #' + row + '? Действие необратимо.')) return;
-  
-  var card = document.getElementById(cardId);
-  if (!card) return;
-  
-  // Блокируем кнопки на карточке
-  var btns = card.querySelectorAll('.act-btn');
-  btns.forEach(function(b) { b.disabled = true; b.style.opacity = '0.5'; });
-  
+async function adminAction(type, row, phone) {
   try {
-    console.log('Удаление заявки:', { row: row, phone: phone, type: 'delete' });
-    
-    var payload = { secret: _gs(), type: 'delete', row: row, phone: phone };
-    var res = await fetch(APPS_SCRIPT_URL, {
+    const res = await fetch(BACKEND_URL + '/admin/action', {
       method: 'POST',
-      headers: { 'Content-Type': 'text/plain' },
-      body: JSON.stringify(payload)
+      headers: {
+        'Content-Type': 'application/json',
+        'x-admin-token': localStorage.getItem('admin_token') || ''
+      },
+      body: JSON.stringify({ type, row, phone })
     });
-    
-    var data = {};
-    try { data = await res.json(); } catch(e) { console.warn('Ответ не JSON:', e); }
-    
-    console.log('Ответ сервера:', data);
-    
-    if (data.ok === true) {
-      // Удаляем из локального массива
-      allLeads = allLeads.filter(function(l) { return l.row != row; });
-      updateCounts();
-      renderLeads(); // Полная перерисовка
-      showToast_('✅ Заявка удалена', 'ok');
-    } else {
-      var errMsg = data.error || 'Сервер не поддерживает удаление или ошибка';
-      showToast_('❌ Ошибка: ' + errMsg, 'err');
-      // Разблокируем кнопки
-      btns.forEach(function(b) { b.disabled = false; b.style.opacity = '1'; });
+
+    const data = await res.json();
+
+    if (res.status === 403) {
+      logout();
+      return false;
     }
-  } catch(e) {
-    console.error('Ошибка при удалении:', e);
-    showToast_('❌ Ошибка сети: ' + e.message, 'err');
-    btns.forEach(function(b) { b.disabled = false; b.style.opacity = '1'; });
+
+    return data.ok === true;
+  } catch (e) {
+    return false;
   }
 }
 
 async function approve(row, phone, cardId) {
-  var card = document.getElementById(cardId);
-  if (!card) return;
-  setCardLoading(card, true);
-  try {
-    var ok = await sendAction('approve', row, phone);
-    if (ok) {
-      var lead = allLeads.find(function(l) { return l.row == row; });
-      if (lead) lead.status = 'approved';
-      updateCounts();
-      showToast_('Одобрено!', 'ok');
-      setTimeout(function() { if (curTab === 'pending') renderLeads(); else rerenderCard(cardId, row); }, 400);
-    } else { showToast_('Ошибка', 'err'); setCardLoading(card, false); }
-  } catch(e) { showToast_('Нет соединения', 'err'); setCardLoading(card, false); }
+  const ok = await adminAction('approve', row, phone);
+  if (ok) {
+    showToast_('Одобрено', 'ok');
+    loadLeads();
+  } else {
+    showToast_('Ошибка', 'err');
+  }
 }
 
 async function reject(row, phone, cardId) {
-  var card = document.getElementById(cardId);
-  if (!card) return;
-  setCardLoading(card, true);
-  try {
-    var ok = await sendAction('reject', row, phone);
-    if (ok) {
-      var lead = allLeads.find(function(l) { return l.row == row; });
-      if (lead) lead.status = 'rejected';
-      updateCounts();
-      showToast_('Отказано', 'info');
-      setTimeout(function() { if (curTab === 'pending') renderLeads(); else rerenderCard(cardId, row); }, 400);
-    } else { showToast_('Ошибка', 'err'); setCardLoading(card, false); }
-  } catch(e) { showToast_('Нет соединения', 'err'); setCardLoading(card, false); }
+  const ok = await adminAction('reject', row, phone);
+  if (ok) {
+    showToast_('Отказано', 'info');
+    loadLeads();
+  } else {
+    showToast_('Ошибка', 'err');
+  }
 }
 
-async function sendAction(type, row, phone) {
-  var payload = { secret: _gs(), type: type, row: row, phone: phone };
-  var res = await fetch(APPS_SCRIPT_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: JSON.stringify(payload) });
-  var data = {};
-  try { data = await res.json(); } catch(e) {}
-  return data.ok === true;
+async function deleteLead(row, phone, cardId) {
+  if (!confirm('Удалить заявку?')) return;
+
+  const ok = await adminAction('delete', row, phone);
+
+  if (ok) {
+    showToast_('Удалено', 'ok');
+    loadLeads();
+  } else {
+    showToast_('Ошибка удаления', 'err');
+  }
 }
 
-function setCardLoading(card, loading) {
-  var btns = card.querySelectorAll('.act-btn');
-  btns.forEach(function(b) { if (!b.disabled) b.disabled = loading; b.style.opacity = loading ? '.5' : '1'; });
-}
-
-function rerenderCard(cardId, row) {
-  var lead = allLeads.find(function(l) { return l.row == row; });
-  var card = document.getElementById(cardId);
-  if (!lead || !card) return;
-  var wasOpen = card.classList.contains('open');
-  card.outerHTML = renderCard(lead);
-  if (wasOpen) { var nc = document.getElementById(cardId); if (nc) nc.classList.add('open'); }
-}
 
 function renderLeads() {
   var wrap = document.getElementById('leads-wrap');
@@ -454,11 +425,23 @@ function showErr(msg) { document.getElementById('leads-wrap').innerHTML = '<div 
 var toastTimer = null;
 function showToast_(msg, type) { var t = document.getElementById('toast'); t.textContent = msg; t.className = 'toast toast-' + type + ' show'; clearTimeout(toastTimer); toastTimer = setTimeout(function() { t.classList.remove('show'); }, 2200); }
 
-// Исправленная кнопка обновления
 document.addEventListener('DOMContentLoaded', function() {
   var refreshBtn = document.getElementById('refreshBtn');
-  if (refreshBtn) refreshBtn.addEventListener('click', function(e) { e.preventDefault(); if (authed) loadLeads(true); });
-  document.getElementById('pwd-input').focus();
+  if (refreshBtn) {
+    refreshBtn.addEventListener('click', function(e) {
+      e.preventDefault();
+      if (authed) loadLeads(true);
+    });
+  }
+
+  if (localStorage.getItem('admin_token')) {
+    authed = true;
+    document.getElementById('login-screen').style.display = 'none';
+    document.getElementById('app').style.display = 'flex';
+    loadLeads();
+  } else {
+    document.getElementById('pwd-input').focus();
+  }
 });
 
 setInterval(function() { if (authed) loadLeads(false); }, 30000);
